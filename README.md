@@ -1,5 +1,7 @@
 # algoimWrapper
 
+[![DOI](https://zenodo.org/badge/611211717.svg)](https://zenodo.org/badge/latestdoi/611211717)
+
 Code to wrap algoim for Julia
 
 ## Citing algoim
