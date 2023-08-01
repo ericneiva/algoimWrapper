@@ -1,16 +1,20 @@
 #include <string>
 #include <fstream>
 #include <iomanip>
+#include <cmath>
 
 #include "jlcxx/jlcxx.hpp"
 #include "jlcxx/functions.hpp"
 #include "jlcxx/tuple.hpp"
 #include "jlcxx/const_array.hpp"
 
+#include "algoim/hocp.hpp"
+#include "algoim/utility.hpp"
 #include "algoim/quadrature_general.hpp"
 #include "algoim/quadrature_multipoly.hpp"
 
 using namespace algoim;
+using algoim::util::sqr;
 
 struct LevelSetFunction {};
 
@@ -98,6 +102,134 @@ void fill_quad_data( const F& fphi,                                      \
 
 }
 
+// LexicographicLoop is essentially an N-dimensional iterator for looping over the
+// coordinates of a Cartesian grid having indices min(0) <= i < max(0),
+// min(1) <= j < max(1), min(2) <= k < max(2), etc. The ordering is such that
+// dimension 0 is inner-most, i.e., iterates the fastest, while dimension
+// N-1 is outer-most and iterates the slowest.
+template<int N>
+class LexicographicLoop
+{
+    uvector<int,N> i;
+    const uvector<int,N> min, max;
+    bool valid;
+public:
+    LexicographicLoop(const uvector<int,N>& min, const uvector<int,N>& max)
+        : i(min), min(min), max(max), valid(all(min < max))
+    {}
+
+    LexicographicLoop& operator++()
+    {
+        for (int dim = 0; dim <= N - 1; ++dim)
+        {
+            if (++i(dim) < max(dim))
+                return *this;
+            i(dim) = min(dim);
+        }
+        valid = false;
+        return *this;
+    }
+
+    const uvector<int,N>& operator()() const
+    {
+        return i;
+    }
+
+    int operator()(int index) const
+    {
+        return i(index);
+    }
+
+    bool operator~() const
+    {
+        return valid;
+    }
+};
+
+// A simple test functor whose purpose is to simulate a grid-defined scalar array
+template<int N, typename T, typename Test>
+struct TestFunctor
+{
+    const Test& test;
+    const uvector<int,N> n;
+    const uvector<T,N> dx;
+    const uvector<T,N> xmin;
+
+    TestFunctor(const Test& test, const uvector<int,N>& n, const uvector<T,N>& dx, const uvector<T,N>& xmin) : test(test), n(n), dx(dx), xmin(xmin) {}
+    T operator() (const uvector<int,N>& i) const
+    {
+        uvector<int,N> j = i;
+        float id = 1;
+        for (int dim = 0; dim < N; ++dim)
+        {
+            if (j(dim) < 0)
+                j(dim) = 0;
+            else if (j(dim) >= n(dim))
+                j(dim) = n(dim) - 1;
+            id += j(dim)*(pow(n(dim),dim));
+        }
+        return test.value(j*dx + xmin, id);
+    }
+};
+
+template<int N, int Degree, typename T, typename F>
+void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
+                    jlcxx::ArrayRef<T> jxmin, jlcxx::ArrayRef<T> jxmax, \
+                    jlcxx::ArrayRef<T> jxcpp )
+{
+
+    // Determine the type of polynomial to use based on given Degree and dimension N
+    typedef typename algoim::StencilPoly<N,Degree>::T_Poly Poly;
+
+    // Fill grid data
+    uvector<int,N> n, ext;
+    uvector<T,N> xmin, dx;
+    for (int i = 0; i < N; ++i)
+    {
+        n(i)    =   partition[i];
+        ext(i)  =   n(i) + 1;
+        xmin(i) =   jxmin[i];
+        dx(i)   = ( jxmax[i] - xmin(i) ) / n(i);
+    }
+
+    // Create a functor whose purpose is to simulate a n-dimensional scalar array
+    TestFunctor<N,T,F> functor(fphi, n, dx, xmin);
+
+    // Find all cells containing the interface and construct the high-order polynomials
+    std::vector<algoim::detail::CellPoly<N,Poly>> cells;
+    algoim::detail::createCellPolynomials(ext, functor, dx, true, cells);
+
+    // Using the polynomials, sample the zero level set in each cell to create a cloud of seed points
+    std::vector<uvector<T,N>> points;
+    std::vector<int> pointcells;
+    int subcellExt = 2;
+    algoim::detail::samplePolynomials(cells, subcellExt, dx, xmin, points, pointcells);
+
+    // Construct a k-d tree from the seed points
+    algoim::KDTree<T,N> kdtree(points);
+
+    // Pass everything to the closest point computation engine
+    algoim::ComputeHighOrderCP<N,Poly> hocp(std::numeric_limits<double>::max(), // bandradius = infinity
+        0.5*max(dx), // amount of overlap, i.e. size of bounding ball in Newton's method
+        sqr(std::max(1.0e-14, pow(max(dx), Poly::order))), // tolerance to determine convergence
+        cells, kdtree, points, pointcells, dx, xmin);
+
+    // Loop over every grid point of domain
+    for (LexicographicLoop<N> i(0, ext); ~i; ++i)
+    {
+        uvector<double,N> x = i()*dx + xmin;
+        uvector<double,N> cp;
+
+        // Compute the closest point to x
+        hocp.compute(x, cp);
+
+        for (int j = 0; j < N; ++j)
+          jxcpp.push_back(cp(j));
+
+    }
+
+}
+
 template<typename T, int N>
 uvector<T,N> to_uvector( jlcxx::ArrayRef<T> jx )
 {
@@ -174,5 +306,20 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
 
     mod.method("fill_quad_data_cpp", &fill_quad_data<2,real,SafeCFunctionLevelSet<2>>);
     mod.method("fill_quad_data_cpp", &fill_quad_data<3,real,SafeCFunctionLevelSet<3>>);
+
+    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<2,2,real,SafeCFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<3,2,real,SafeCFunctionLevelSet<3>>);
+
+    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<2,3,real,SafeCFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<3,3,real,SafeCFunctionLevelSet<3>>);
+
+    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<2,4,real,SafeCFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<3,4,real,SafeCFunctionLevelSet<3>>);
+
+    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<2,5,real,SafeCFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<3,5,real,SafeCFunctionLevelSet<3>>);
+
+    mod.method("fill_cpp_data_cubic", &fill_cpp_data<2,-1,real,SafeCFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_cubic", &fill_cpp_data<3,-1,real,SafeCFunctionLevelSet<3>>);
 
 }
