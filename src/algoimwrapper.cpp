@@ -19,30 +19,47 @@ using algoim::util::sqr;
 struct LevelSetFunction {};
 
 template<int N>
-struct SafeCFunctionLevelSet : LevelSetFunction
+struct ClosureLevelSet
 {
 
-    jlcxx::SafeCFunction op_fun;
-    jlcxx::SafeCFunction grad_fun;
+  jlcxx::SafeCFunction function;
+  void * params;
 
-    SafeCFunctionLevelSet(
-      jlcxx::SafeCFunction f,
-      jlcxx::SafeCFunction g
-    ) : op_fun(f),
-        grad_fun(g)
+  ClosureLevelSet(
+    jlcxx::SafeCFunction f,
+    jl_function_t* f_p
+  ) : function(f),
+      params(f_p)
+  {
+  }
+
+};
+
+template<int N>
+struct JuliaFunctionLevelSet : LevelSetFunction
+{
+
+    ClosureLevelSet<N> val;
+    ClosureLevelSet<N> grad;
+
+    JuliaFunctionLevelSet(
+      ClosureLevelSet<N> f,
+      ClosureLevelSet<N> g
+    ) : val(f),
+        grad(g)
     {
     }
 
     real value(const uvector<real,N>& x, float id) const
     {
-        auto f = jlcxx::make_function_pointer<real(const uvector<real,N> &, float)>(op_fun);
-        return f(x,id);
+        auto f = jlcxx::make_function_pointer<real(const uvector<real,N> &, float, void*)>(val.function);
+        return f(x,id,val.params);
     }
 
     uvector<real,N> gradient(const uvector<real,N>& x, float id) const
     {
-        auto f = jlcxx::make_function_pointer<const uvector<real,N> &(const uvector<real,N> &, float)>(grad_fun);
-        return f(x,id);
+        auto g = jlcxx::make_function_pointer<const uvector<real,N> &(const uvector<real,N> &, float, void*)>(grad.function);
+        return g(x,id,grad.params);
     }
 
 };
@@ -252,8 +269,8 @@ namespace jlcxx
 
     template<> struct IsMirroredType<LevelSetFunction> : std::false_type { };
 
-    template<int N> struct SuperType<SafeCFunctionLevelSet<N>> { typedef LevelSetFunction type; };
-    template<int N> struct IsMirroredType<SafeCFunctionLevelSet<N>> : std::false_type { };
+    template<int N> struct SuperType<JuliaFunctionLevelSet<N>> { typedef LevelSetFunction type; };
+    template<int N> struct IsMirroredType<JuliaFunctionLevelSet<N>> : std::false_type { };
 
 }
 
@@ -298,28 +315,37 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
     
     // Map every C++ level set struct into a Julia type
 
-    mod.add_type<jlcxx::Parametric<jlcxx::TypeVar<1>>>("SafeCFunctionLevelSet",jlcxx::julia_base_type<LevelSetFunction>())
-      .apply<SafeCFunctionLevelSet<2>,SafeCFunctionLevelSet<3>>([](auto wrapped)
-      {
-        wrapped.template constructor<jlcxx::SafeCFunction,jlcxx::SafeCFunction>();
+    mod.add_type<jlcxx::Parametric<jlcxx::TypeVar<1>>>("ClosureLevelSet")
+      .apply<ClosureLevelSet<2>,ClosureLevelSet<3>>([](auto wrapped){
+        wrapped.template constructor<jlcxx::SafeCFunction,jl_function_t*>();
       });
 
-    mod.method("fill_quad_data_cpp", &fill_quad_data<2,real,SafeCFunctionLevelSet<2>>);
-    mod.method("fill_quad_data_cpp", &fill_quad_data<3,real,SafeCFunctionLevelSet<3>>);
+    mod.add_type<jlcxx::Parametric<jlcxx::TypeVar<1>>>("JuliaFunction2DLevelSet",jlcxx::julia_base_type<LevelSetFunction>())
+      .apply<JuliaFunctionLevelSet<2>>([](auto wrapped){
+        wrapped.template constructor<ClosureLevelSet<2>,ClosureLevelSet<2>>();
+      });
 
-    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<2,2,real,SafeCFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<3,2,real,SafeCFunctionLevelSet<3>>);
+    mod.add_type<jlcxx::Parametric<jlcxx::TypeVar<1>>>("JuliaFunction3DLevelSet",jlcxx::julia_base_type<LevelSetFunction>())
+      .apply<JuliaFunctionLevelSet<3>>([](auto wrapped){
+        wrapped.template constructor<ClosureLevelSet<3>,ClosureLevelSet<3>>();
+      });
 
-    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<2,3,real,SafeCFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<3,3,real,SafeCFunctionLevelSet<3>>);
+    mod.method("fill_quad_data_cpp", &fill_quad_data<2,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_quad_data_cpp", &fill_quad_data<3,real,JuliaFunctionLevelSet<3>>);
 
-    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<2,4,real,SafeCFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<3,4,real,SafeCFunctionLevelSet<3>>);
+    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<2,2,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<3,2,real,JuliaFunctionLevelSet<3>>);
 
-    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<2,5,real,SafeCFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<3,5,real,SafeCFunctionLevelSet<3>>);
+    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<2,3,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<3,3,real,JuliaFunctionLevelSet<3>>);
 
-    mod.method("fill_cpp_data_cubic", &fill_cpp_data<2,-1,real,SafeCFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_cubic", &fill_cpp_data<3,-1,real,SafeCFunctionLevelSet<3>>);
+    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<2,4,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<3,4,real,JuliaFunctionLevelSet<3>>);
+
+    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<2,5,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<3,5,real,JuliaFunctionLevelSet<3>>);
+
+    mod.method("fill_cpp_data_cubic", &fill_cpp_data<2,-1,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_cpp_data_cubic", &fill_cpp_data<3,-1,real,JuliaFunctionLevelSet<3>>);
 
 }
