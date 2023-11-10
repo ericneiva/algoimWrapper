@@ -65,10 +65,10 @@ struct JuliaFunctionLevelSet : LevelSetFunction
 };
 
 template<int N, typename T, typename F>
-void fill_quad_data( const F& fphi,                                      \
-                     jlcxx::ArrayRef<T> jx,    jlcxx::ArrayRef<T> jw,    \
-                     jlcxx::ArrayRef<T> jxmin, jlcxx::ArrayRef<T> jxmax, \
-                     int q, int phase, float id )
+void fill_quad_data_single( const F& fphi,                                      \
+                            jlcxx::ArrayRef<T> jx,    jlcxx::ArrayRef<T> jw,    \
+                            jlcxx::ArrayRef<T> jxmin, jlcxx::ArrayRef<T> jxmax, \
+                            int q, int phase, float id )
 {
     
     uvector<int,N> P = q;
@@ -101,8 +101,87 @@ void fill_quad_data( const F& fphi,                                      \
     else {
       ipquad.integrate(AutoMixed, q, [&](const uvector<T,N>& x, T w)
       {
-          if ( bernstein::evalBernsteinPoly(phi, x) * phase > 0)
+          if ( bernstein::evalBernsteinPoly(phi, x) * phase > 0 )
               quad.push_back(add_component(x, N, w));
+      });
+    }
+
+    // Fill coords and weights of quadrature in Cpp-to-Julia array data
+    int np = size(quad);
+    // std::cout << np << std::endl;
+    for (int i = 0; i < np; ++i) {
+      const T* d = quad[i].data();
+      // std::cout << d << std::endl;
+      for (int j = 0; j < N; ++j)
+        jx.push_back(d[j]);
+      jw.push_back(d[N]);
+    }
+
+}
+
+template<int N, typename T, typename F>
+void fill_quad_data_dual( const F& fphi1,           const F& fphi2,           \
+                          jlcxx::ArrayRef<T> jx,    jlcxx::ArrayRef<T> jw,    \
+                          jlcxx::ArrayRef<T> jxmin, jlcxx::ArrayRef<T> jxmax, \
+                          int q, int phase1, int phase2, float id )
+{
+    
+    uvector<int,N> P = q;
+    uvector<T,N> xmin, xmax;
+    for (int i = 0; i < N; ++i)
+    {
+        xmin(i) = jxmin[i];
+        xmax(i) = jxmax[i];
+    }
+
+    // Construct phi by mapping [0,1] onto bounding box [xmin,xmax]
+    xarray<real,N> phi1(nullptr, P), phi2(nullptr, P);
+    algoim_spark_alloc(real, phi1, phi2);
+
+    auto value1 = [&](const uvector<real,N>& x, float id) { return fphi1.value(x,id); };
+    bernstein::bernsteinInterpolate<N>([&](const uvector<T,N>& x) { return value1(xmin + x * (xmax - xmin),id); }, phi1);
+
+    auto value2 = [&](const uvector<real,N>& x, float id) { return fphi2.value(x,id); };
+    bernstein::bernsteinInterpolate<N>([&](const uvector<T,N>& x) { return value2(xmin + x * (xmax - xmin),id); }, phi2);
+
+    // Build quadrature hierarchy
+    ImplicitPolyQuadrature<N> ipquad(phi1, phi2);
+
+    // Tolerance to filter surface quad points, since their LS value is not exactly zero.
+    // See bernsteinUnitIntervalRealRoots_fast algoim function.
+    real tol = 1.0e4 * std::numeric_limits<real>::epsilon();
+
+    // Compute quadrature scheme and record the nodes & weights
+    std::vector<uvector<T,N+1>> quad;
+    if ( ( phase1 == 0 ) && ( phase2 != 0 ) ){ 
+      ipquad.integrate_surf(AutoMixed, q, [&](const uvector<T,N>& x, T w, const uvector<T,N>& wn)
+      {
+          if ( bernstein::evalBernsteinPoly(phi2, x) * phase2 > tol )
+              quad.push_back(add_component(x, N, w));
+      });
+    }
+    else if ( ( phase1 != 0 ) && ( phase2 == 0 ) ){ 
+      ipquad.integrate_surf(AutoMixed, q, [&](const uvector<T,N>& x, T w, const uvector<T,N>& wn)
+      {
+          if ( bernstein::evalBernsteinPoly(phi1, x) * phase1 > tol )
+              quad.push_back(add_component(x, N, w));
+      });
+    }
+    else if ( ( phase1 == 0 ) && ( phase2 == 0 ) ){ 
+      ipquad.integrate_surf(AutoMixed, q, [&](const uvector<T,N>& x, T w, const uvector<T,N>& wn)
+      {
+          if ( abs( bernstein::evalBernsteinPoly(phi1, x) ) < tol ){
+            if ( abs( bernstein::evalBernsteinPoly(phi2, x) ) < tol )
+                quad.push_back(add_component(x, N, w));
+          }
+      });
+    }
+    else { // Only volume cases remain
+      ipquad.integrate(AutoMixed, q, [&](const uvector<T,N>& x, T w)
+      {
+          if ( ( bernstein::evalBernsteinPoly(phi1, x) * phase1 > ( 1.0e-2 * tol ) ) && \
+               ( bernstein::evalBernsteinPoly(phi2, x) * phase2 > ( 1.0e-2 * tol ) ) )
+              quad.push_back(add_component(x, N, w)); // I think I can loosen the tolerance here
       });
     }
 
@@ -330,8 +409,11 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
         wrapped.template constructor<ClosureLevelSet<3>,ClosureLevelSet<3>>();
       });
 
-    mod.method("fill_quad_data_cpp", &fill_quad_data<2,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_quad_data_cpp", &fill_quad_data<3,real,JuliaFunctionLevelSet<3>>);
+    mod.method("fill_quad_data_cpp", &fill_quad_data_single<2,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_quad_data_cpp", &fill_quad_data_single<3,real,JuliaFunctionLevelSet<3>>);
+
+    mod.method("fill_quad_data_cpp", &fill_quad_data_dual<2,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_quad_data_cpp", &fill_quad_data_dual<3,real,JuliaFunctionLevelSet<3>>);
 
     mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<2,2,real,JuliaFunctionLevelSet<2>>);
     mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<3,2,real,JuliaFunctionLevelSet<3>>);
