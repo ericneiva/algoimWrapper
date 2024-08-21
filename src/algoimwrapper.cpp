@@ -271,6 +271,7 @@ struct TestFunctor
 template<int N, int Degree, typename T, typename F>
 void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
                     jlcxx::ArrayRef<T> jxmin, jlcxx::ArrayRef<T> jxmax, \
+                    jlcxx::ArrayRef<int> jimin, jlcxx::ArrayRef<int> jimax, \
                     jlcxx::ArrayRef<T> jxcpp )
 {
 
@@ -278,7 +279,7 @@ void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
     typedef typename algoim::StencilPoly<N,Degree>::T_Poly Poly;
 
     // Fill grid data
-    uvector<int,N> n, ext;
+    uvector<int,N> n, ext, imin, imax;
     uvector<T,N> xmin, dx;
     for (int i = 0; i < N; ++i)
     {
@@ -286,6 +287,8 @@ void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
         ext(i)  =   n(i) + 1;
         xmin(i) =   jxmin[i];
         dx(i)   = ( jxmax[i] - xmin(i) ) / n(i);
+        imin(i) =   jimin[i] - 1;
+        imax(i) =   jimax[i];
     }
 
     // Create a functor whose purpose is to simulate a n-dimensional scalar array
@@ -311,7 +314,7 @@ void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
         cells, kdtree, points, pointcells, dx, xmin);
 
     // Loop over every grid point of domain
-    for (LexicographicLoop<N> i(0, ext); ~i; ++i)
+    for (LexicographicLoop<N> i(imin, imax); ~i; ++i)
     {
         uvector<double,N> x = i()*dx + xmin;
         uvector<double,N> cp;
