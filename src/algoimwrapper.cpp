@@ -242,36 +242,50 @@ public:
     }
 };
 
-// A simple test functor whose purpose is to simulate a grid-defined scalar array
-template<int N, typename T, typename Test>
-struct TestFunctor
+// A simple functor whose purpose is to simulate a grid-defined scalar array
+// Function is evaluated via a JuliaFunctionLevelSet
+template<int N, typename T, typename Fun>
+struct JuliaCallFunctor
 {
-    const Test& test;
+    const Fun& fun;
     const uvector<int,N> n;
     const uvector<T,N> dx;
     const uvector<T,N> xmin;
+    int refs;
 
-    TestFunctor(const Test& test, const uvector<int,N>& n, const uvector<T,N>& dx, const uvector<T,N>& xmin) : test(test), n(n), dx(dx), xmin(xmin) {}
+    JuliaCallFunctor(const Fun& fun, const uvector<int,N>& n, const uvector<T,N>& dx, const uvector<T,N>& xmin, int refs)
+        : fun(fun), n(n), dx(dx), xmin(xmin), refs(refs)
+    {}
     T operator() (const uvector<int,N>& i) const
     {
-        uvector<int,N> j = i;
+        uvector<int,N> nj = i;
+        uvector<int,N> cj = i;
         float id = 1;
+
         for (int dim = 0; dim < N; ++dim)
         {
-            if (j(dim) < 0)
-                j(dim) = 0;
-            else if (j(dim) >= n(dim))
-                j(dim) = n(dim) - 1;
-            id += j(dim)*(pow(n(dim),dim));
+            if (cj(dim) < 0)
+            {
+                cj(dim) = 0;
+                nj(dim) = 0;
+            }
+            else if (cj(dim) >= n(dim))
+            {
+                cj(dim) = n(dim) - 1;
+                nj(dim) = n(dim);
+            }
+            id += (cj(dim)/refs)*(pow(n(dim)/refs,dim));
         }
-        return test.value(j*dx + xmin, id);
+
+        return fun.value(nj*dx + xmin, id); // id only used in sequential case
     }
 };
 
-template<int N, int Degree, typename T, typename F>
-void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
-                    jlcxx::ArrayRef<T> jxmin, jlcxx::ArrayRef<T> jxmax, \
-                    jlcxx::ArrayRef<T> jxcpp )
+template<int N, int Degree, typename T, typename F, typename G>
+void fill_cpp_data_call( const F& fphi, const G& jldeg, jlcxx::ArrayRef<int> partition, \
+                         jlcxx::ArrayRef<T>      jxmin, jlcxx::ArrayRef<T>   jxmax,     \
+                         jlcxx::ArrayRef<int>    jrmin, jlcxx::ArrayRef<int> jrmax,     \
+                         jlcxx::ArrayRef<T>      jxcpp, int refs )
 {
 
     // Determine the type of polynomial to use based on given Degree and dimension N
@@ -279,6 +293,7 @@ void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
 
     // Fill grid data
     uvector<int,N> n, ext;
+    uvector<int,N> rmin, rmax;
     uvector<T,N> xmin, dx;
     for (int i = 0; i < N; ++i)
     {
@@ -286,10 +301,12 @@ void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
         ext(i)  =   n(i) + 1;
         xmin(i) =   jxmin[i];
         dx(i)   = ( jxmax[i] - xmin(i) ) / n(i);
+        rmin(i) =   jrmin[i];
+        rmax(i) =   jrmax[i] + 1;
     }
 
     // Create a functor whose purpose is to simulate a n-dimensional scalar array
-    TestFunctor<N,T,F> functor(fphi, n, dx, xmin);
+    JuliaCallFunctor<N,T,F> functor(fphi, n, dx, xmin, refs);
 
     // Find all cells containing the interface and construct the high-order polynomials
     std::vector<algoim::detail::CellPoly<N,Poly>> cells;
@@ -311,7 +328,100 @@ void fill_cpp_data( const F& fphi, jlcxx::ArrayRef<int> partition,      \
         cells, kdtree, points, pointcells, dx, xmin);
 
     // Loop over every grid point of domain
-    for (LexicographicLoop<N> i(0, ext); ~i; ++i)
+    for (LexicographicLoop<N> i(rmin, rmax); ~i; ++i)
+    {
+        uvector<double,N> x = i()*dx + xmin;
+        uvector<double,N> cp;
+
+        // Compute the closest point to x
+        hocp.compute(x, cp);
+
+        for (int j = 0; j < N; ++j)
+          jxcpp.push_back(cp(j));
+
+    }
+
+}
+
+// A simple functor whose purpose is to simulate a grid-defined scalar array
+// Function values are already computed and stored in a Julia vector
+template<int N, typename T>
+struct GridFunctor
+{
+    jlcxx::ArrayRef<T> vals;
+    const uvector<int,N> n;
+    const uvector<T,N> dx;
+    const uvector<T,N> xmin;
+
+    GridFunctor(const jlcxx::ArrayRef<T>& vals, const uvector<int,N>& n, const uvector<T,N>& dx, const uvector<T,N>& xmin)
+        : vals(vals), n(n), dx(dx), xmin(xmin)
+    {}
+    T operator() (const uvector<int,N>& i) const
+    {
+        uvector<int,N> j = i;
+        int id = 1;
+
+        for (int dim = 0; dim < N; ++dim)
+        {
+            if (j(dim) < 0)
+                j(dim) = 0;
+            else if (j(dim) > n(dim))
+                j(dim) = n(dim);
+            id += j(dim)*(pow(n(dim)+1,dim));
+        }
+        
+        return vals[id];
+    }
+};
+
+template<int N, int Degree, typename T, typename F, typename G>
+void fill_cpp_data_grid( const F& dim, const G& jldeg, jlcxx::ArrayRef<int> partition, \
+                         jlcxx::ArrayRef<T>     jxmin, jlcxx::ArrayRef<T>   jxmax,     \
+                         jlcxx::ArrayRef<int>   jrmin, jlcxx::ArrayRef<int> jrmax,     \
+                         jlcxx::ArrayRef<T>     jvals, jlcxx::ArrayRef<T>   jxcpp )
+{
+
+    // Determine the type of polynomial to use based on given Degree and dimension N
+    typedef typename algoim::StencilPoly<N,Degree>::T_Poly Poly;
+
+    // Fill grid data
+    uvector<int,N> n, ext;
+    uvector<int,N> rmin, rmax;
+    uvector<T,N> xmin, dx;
+    for (int i = 0; i < N; ++i)
+    {
+        n(i)    =   partition[i];
+        ext(i)  =   n(i) + 1;
+        xmin(i) =   jxmin[i];
+        dx(i)   = ( jxmax[i] - xmin(i) ) / n(i);
+        rmin(i) =   jrmin[i];
+        rmax(i) =   jrmax[i] + 1;
+    }
+
+    // Create a functor whose purpose is to simulate a d-dimensional scalar array
+    GridFunctor<N,T> functor(jvals, n, dx, xmin);
+
+    // Find all cells containing the interface and construct the high-order polynomials
+    std::vector<algoim::detail::CellPoly<N,Poly>> cells;
+    algoim::detail::createCellPolynomials(ext, functor, dx, true, cells);
+
+    // Using the polynomials, sample the zero level set in each cell to create a cloud of seed points
+    std::vector<uvector<T,N>> points;
+    std::vector<int> pointcells;
+    int subcellExt = 2;
+    algoim::detail::samplePolynomials(cells, subcellExt, dx, xmin, points, pointcells);
+
+    // Construct a k-d tree from the seed points
+    algoim::KDTree<T,N> kdtree(points);
+
+    // Pass everything to the closest point computation engine
+    algoim::ComputeHighOrderCP<N,Poly> hocp(std::numeric_limits<double>::max(), // bandradius = infinity
+        0.5*max(dx), // amount of overlap, i.e. size of bounding ball in Newton's method
+        sqr(std::max(1.0e-14, pow(max(dx), Poly::order))), // tolerance to determine convergence
+        cells, kdtree, points, pointcells, dx, xmin);
+
+    // Loop over every grid point of domain
+    for (LexicographicLoop<N> i(rmin, rmax); ~i; ++i)
     {
         uvector<double,N> x = i()*dx + xmin;
         uvector<double,N> cp;
@@ -409,25 +519,40 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
         wrapped.template constructor<ClosureLevelSet<3>,ClosureLevelSet<3>>();
       });
 
-    mod.method("fill_quad_data_cpp", &fill_quad_data_single<2,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_quad_data_cpp", &fill_quad_data_single<3,real,JuliaFunctionLevelSet<3>>);
+    mod.method("fill_quad_data_cppcall", &fill_quad_data_single<2,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_quad_data_cppcall", &fill_quad_data_single<3,real,JuliaFunctionLevelSet<3>>);
 
-    mod.method("fill_quad_data_cpp", &fill_quad_data_dual<2,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_quad_data_cpp", &fill_quad_data_dual<3,real,JuliaFunctionLevelSet<3>>);
+    mod.method("fill_quad_data_cppcall", &fill_quad_data_dual<  2,real,JuliaFunctionLevelSet<2>>);
+    mod.method("fill_quad_data_cppcall", &fill_quad_data_dual<  3,real,JuliaFunctionLevelSet<3>>);
 
-    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<2,2,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_2", &fill_cpp_data<3,2,real,JuliaFunctionLevelSet<3>>);
-
-    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<2,3,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_3", &fill_cpp_data<3,3,real,JuliaFunctionLevelSet<3>>);
-
-    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<2,4,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_4", &fill_cpp_data<3,4,real,JuliaFunctionLevelSet<3>>);
-
-    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<2,5,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_taylor_5", &fill_cpp_data<3,5,real,JuliaFunctionLevelSet<3>>);
-
-    mod.method("fill_cpp_data_cubic", &fill_cpp_data<2,-1,real,JuliaFunctionLevelSet<2>>);
-    mod.method("fill_cpp_data_cubic", &fill_cpp_data<3,-1,real,JuliaFunctionLevelSet<3>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<2, 2,real,JuliaFunctionLevelSet<2>,jlcxx::Val<int, 2>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<3, 2,real,JuliaFunctionLevelSet<3>,jlcxx::Val<int, 2>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<2, 3,real,JuliaFunctionLevelSet<2>,jlcxx::Val<int, 3>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<3, 3,real,JuliaFunctionLevelSet<3>,jlcxx::Val<int, 3>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<2, 4,real,JuliaFunctionLevelSet<2>,jlcxx::Val<int, 4>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<3, 4,real,JuliaFunctionLevelSet<3>,jlcxx::Val<int, 4>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<2, 5,real,JuliaFunctionLevelSet<2>,jlcxx::Val<int, 5>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<3, 5,real,JuliaFunctionLevelSet<3>,jlcxx::Val<int, 5>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<2,-1,real,JuliaFunctionLevelSet<2>,jlcxx::Val<int,-1>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_call<3,-1,real,JuliaFunctionLevelSet<3>,jlcxx::Val<int,-1>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<2, 2,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 2>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<3, 2,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 2>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<2, 3,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 3>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<3, 3,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 3>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<2, 4,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 4>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<3, 4,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 4>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<2, 5,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 5>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<3, 5,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 5>>);
+ 
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<2,-1,real,       jlcxx::Val<int,2>,jlcxx::Val<int,-1>>);
+    mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<3,-1,real,       jlcxx::Val<int,3>,jlcxx::Val<int,-1>>);
 
 }
