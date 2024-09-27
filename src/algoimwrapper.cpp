@@ -83,7 +83,7 @@ void fill_quad_data_single( const F& fphi,                                      
     xarray<T,N> phi(nullptr, P);
     algoim_spark_alloc(T, phi);
 
-    auto value = [&](const uvector<real,N>& x, float id) { return fphi.value(x,id); };
+    auto value = [&](const uvector<T,N>& x, float id) { return fphi.value(x,id); };
     bernstein::bernsteinInterpolate<N>([&](const uvector<T,N>& x) { return value(xmin + x * (xmax - xmin),id); }, phi);
 
     // Build quadrature hierarchy
