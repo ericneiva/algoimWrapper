@@ -276,7 +276,7 @@ struct JuliaCallFunctor
             }
             id += (cj(dim)/refs)*(pow(n(dim)/refs,dim));
         }
-
+        // std::cout << i << " " << nj*dx + xmin << " " << fun.value(nj*dx + xmin, id) << std::endl;
         return fun.value(nj*dx + xmin, id); // id only used in sequential case
     }
 };
@@ -359,7 +359,7 @@ struct GridFunctor
     T operator() (const uvector<int,N>& i) const
     {
         uvector<int,N> j = i;
-        int id = 1;
+        int id = 0;
 
         for (int dim = 0; dim < N; ++dim)
         {
@@ -369,7 +369,7 @@ struct GridFunctor
                 j(dim) = n(dim);
             id += j(dim)*(pow(n(dim)+1,dim));
         }
-        
+        // std::cout << i << " " << vals[id] << std::endl;
         return vals[id];
     }
 };
