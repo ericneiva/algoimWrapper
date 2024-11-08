@@ -251,11 +251,22 @@ struct JuliaCallFunctor
     const uvector<int,N> n;
     const uvector<T,N> dx;
     const uvector<T,N> xmin;
+    uvector<int,N> p;
     int refs;
 
     JuliaCallFunctor(const Fun& fun, const uvector<int,N>& n, const uvector<T,N>& dx, const uvector<T,N>& xmin, int refs)
         : fun(fun), n(n), dx(dx), xmin(xmin), refs(refs)
-    {}
+    {
+        int pp = 1;
+        for (int dim = 0; dim < N; ++dim)
+        {
+            if (dim == 0)
+                p(dim) = pp;
+            else
+                p(dim) = p(dim-1) * pp;
+            pp = n(dim)/refs;
+        }
+    }
     T operator() (const uvector<int,N>& i) const
     {
         uvector<int,N> nj = i;
@@ -274,9 +285,9 @@ struct JuliaCallFunctor
                 cj(dim) = n(dim) - 1;
                 nj(dim) = n(dim);
             }
-            id += (cj(dim)/refs)*(pow(n(dim)/refs,dim));
+            id += (cj(dim)/refs) * p(dim);
         }
-        // std::cout << i << " " << nj*dx + xmin << " " << fun.value(nj*dx + xmin, id) << std::endl;
+        // std::cout << i << " " << id << " " << nj*dx + xmin << " " << fun.value(nj*dx + xmin, id) << std::endl;
         return fun.value(nj*dx + xmin, id); // id only used in sequential case
     }
 };
@@ -352,10 +363,21 @@ struct GridFunctor
     const uvector<int,N> n;
     const uvector<T,N> dx;
     const uvector<T,N> xmin;
+    uvector<int,N> p;
 
     GridFunctor(const jlcxx::ArrayRef<T>& vals, const uvector<int,N>& n, const uvector<T,N>& dx, const uvector<T,N>& xmin)
         : vals(vals), n(n), dx(dx), xmin(xmin)
-    {}
+    {
+        int pp = 1;
+        for (int dim = 0; dim < N; ++dim)
+        {
+            if (dim == 0)
+                p(dim) = pp;
+            else
+                p(dim) = p(dim-1) * pp;
+            pp = n(dim)+1;
+        }
+    }
     T operator() (const uvector<int,N>& i) const
     {
         uvector<int,N> j = i;
@@ -367,9 +389,9 @@ struct GridFunctor
                 j(dim) = 0;
             else if (j(dim) > n(dim))
                 j(dim) = n(dim);
-            id += j(dim)*(pow(n(dim)+1,dim));
+            id += j(dim) * p(dim);
         }
-        // std::cout << i << " " << vals[id] << std::endl;
+        // std::cout << i << " " << id << " " << vals[id] << std::endl;
         return vals[id];
     }
 };
