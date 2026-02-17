@@ -458,6 +458,68 @@ void fill_cpp_data_grid( const F& dim, const G& jldeg, jlcxx::ArrayRef<int> part
 
 }
 
+template<int N, int Degree, typename T, typename F, typename G>
+void fill_cpp_data_pts( const F& dim, const G& jldeg, jlcxx::ArrayRef<int> partition, \
+                        jlcxx::ArrayRef<T>     jxmin, jlcxx::ArrayRef<T>   jxmax,     \
+                        jlcxx::ArrayRef<T>     jvals, jlcxx::ArrayRef<T>   jpoints,   \
+                        jlcxx::ArrayRef<T>     jxcpp )
+{
+
+    // Determine the type of polynomial to use based on given Degree and dimension N
+    typedef typename algoim::StencilPoly<N,Degree>::T_Poly Poly;
+
+    // Fill grid data
+    uvector<int,N> n, ext;
+    uvector<T,N> xmin, dx;
+    for (int i = 0; i < N; ++i)
+    {
+        n(i)    =   partition[i];
+        ext(i)  =   n(i) + 1;
+        xmin(i) =   jxmin[i];
+        dx(i)   = ( jxmax[i] - xmin(i) ) / n(i);
+    }
+
+    // Create a functor whose purpose is to simulate a d-dimensional scalar array
+    GridFunctor<N,T> functor(jvals, n, dx, xmin);
+
+    // Find all cells containing the interface and construct the high-order polynomials
+    std::vector<algoim::detail::CellPoly<N,Poly>> cells;
+    algoim::detail::createCellPolynomials(ext, functor, dx, true, cells);
+
+    // Using the polynomials, sample the zero level set in each cell to create a cloud of seed points
+    std::vector<uvector<T,N>> points;
+    std::vector<int> pointcells;
+    int subcellExt = 2;
+    algoim::detail::samplePolynomials(cells, subcellExt, dx, xmin, points, pointcells);
+
+    // Construct a k-d tree from the seed points
+    algoim::KDTree<T,N> kdtree(points);
+
+    // Pass everything to the closest point computation engine
+    algoim::ComputeHighOrderCP<N,Poly> hocp(std::numeric_limits<double>::max(), // bandradius = infinity
+        0.5*max(dx), // amount of overlap, i.e. size of bounding ball in Newton's method
+        sqr(std::max(1.0e-14, pow(max(dx), Poly::order))), // tolerance to determine convergence
+        cells, kdtree, points, pointcells, dx, xmin);
+
+    // Loop over the provided points (flattened array of size N * npoints)
+    const std::size_t npoints = jpoints.size() / static_cast<std::size_t>(N);
+    for (std::size_t i = 0; i < npoints; ++i)
+    {
+        uvector<double,N> x;
+        for (int j = 0; j < N; ++j)
+            x(j) = static_cast<double>(jpoints[i * static_cast<std::size_t>(N) + static_cast<std::size_t>(j)]);
+
+        uvector<double,N> cp;
+
+        // Compute the closest point to x
+        hocp.compute(x, cp);
+
+        for (int j = 0; j < N; ++j)
+          jxcpp.push_back(cp(j));
+    }
+
+}
+
 template<typename T, int N>
 uvector<T,N> to_uvector( jlcxx::ArrayRef<T> jx )
 {
@@ -576,5 +638,20 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
  
     mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<2,-1,real,       jlcxx::Val<int,2>,jlcxx::Val<int,-1>>);
     mod.method("fill_cpp_data_cppcall" , &fill_cpp_data_grid<3,-1,real,       jlcxx::Val<int,3>,jlcxx::Val<int,-1>>);
+
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<2, 2,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 2>>);
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<3, 2,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 2>>);
+
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<2, 3,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 3>>);
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<3, 3,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 3>>);
+
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<2, 4,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 4>>);
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<3, 4,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 4>>);
+
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<2, 5,real,       jlcxx::Val<int,2>,jlcxx::Val<int, 5>>);
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<3, 5,real,       jlcxx::Val<int,3>,jlcxx::Val<int, 5>>);
+
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<2,-1,real,       jlcxx::Val<int,2>,jlcxx::Val<int,-1>>);
+    mod.method("fill_cpp_data_cppcall_pts" , &fill_cpp_data_pts<3,-1,real,       jlcxx::Val<int,3>,jlcxx::Val<int,-1>>);
 
 }
