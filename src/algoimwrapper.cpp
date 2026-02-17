@@ -27,7 +27,7 @@ struct ClosureLevelSet
 
   ClosureLevelSet(
     jlcxx::SafeCFunction f,
-    jl_function_t* f_p
+    jl_value_t* f_p
   ) : function(f),
       params(f_p)
   {
@@ -590,7 +590,7 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod)
 
     mod.add_type<jlcxx::Parametric<jlcxx::TypeVar<1>>>("ClosureLevelSet")
       .apply<ClosureLevelSet<2>,ClosureLevelSet<3>>([](auto wrapped){
-        wrapped.template constructor<jlcxx::SafeCFunction,jl_function_t*>();
+        wrapped.template constructor<jlcxx::SafeCFunction,jl_value_t*>();
       });
 
     mod.add_type<jlcxx::Parametric<jlcxx::TypeVar<1>>>("JuliaFunction2DLevelSet",jlcxx::julia_base_type<LevelSetFunction>())
